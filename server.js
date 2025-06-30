@@ -93,10 +93,61 @@ function findAvailablePublicGame() {
   return null;
 }
 
+
 // Main connection handler
 io.on('connection', (socket) => {
   let currentGameId = null;
-  let currentPlayerId = socket.id;
+  let currentPlayerId = socket.id;// Track ready states per game
+
+
+    
+    socket.on('joinGame', (gameId) => {
+        currentGameId = gameId;
+        gameReadyStates[gameId] = gameReadyStates[gameId] || {};
+        socket.join(gameId);
+        updatePlayers(gameId);
+    });
+    
+    socket.on('playerReady', ({ isReady }) => {
+        if (!currentGameId) return;
+        
+        // Update ready state
+        gameReadyStates[currentGameId][socket.id] = isReady;
+        
+        // Broadcast new ready states
+        io.to(currentGameId).emit('readyStatesUpdated', gameReadyStates[currentGameId]);
+        
+        // Check if all players are ready
+        const players = getPlayersInRoom(currentGameId);
+        const allReady = players.length >= 2 && 
+                        players.every(player => gameReadyStates[currentGameId][player.id]);
+        
+        if (allReady) {
+            // Start countdown
+            io.to(currentGameId).emit('gameStarting');
+            setTimeout(() => {
+                io.to(currentGameId).emit('gameStart');
+            }, 3000); // 3 second countdown
+        }
+    });
+    
+    function updatePlayers(gameId) {
+        io.to(gameId).emit('playersUpdated', {
+            players: getPlayersInRoom(gameId)
+        });
+    }
+    
+    function getPlayersInRoom(gameId) {
+        const sockets = Array.from(io.sockets.adapter.rooms.get(gameId) || []);
+        return sockets.map(socketId => {
+            const socket = io.sockets.sockets.get(socketId);
+            return {
+                id: socket.id,
+                character: socket.character
+            };
+        });
+    }
+});
 
   // Quick Play - Auto Matchmaking
   socket.on('quickPlay', ({ character }) => {
