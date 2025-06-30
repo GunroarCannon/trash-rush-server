@@ -11,23 +11,16 @@ const io = require('socket.io')(http, {
 
 const PORT = process.env.PORT || 3000;
 
-// Game lobbies
-const gameLobbies = {};
-
-// Helper function to generate unique game IDs
-function generateGameId() {
-  return Math.random().toString(36).substr(2, 6).toUpperCase();
-}
-
-// Game class to manage individual game state
 class Game {
-  constructor() {
+  constructor(isPublic = false) {
     this.players = {};
     this.gameStarted = false;
     this.maxPlayers = 4;
     this.currentRound = 1;
     this.maxRounds = 3;
     this.trashType = null;
+    this.isPublic = isPublic;
+    this.createdAt = Date.now();
   }
 
   addPlayer(playerId, socket) {
@@ -39,7 +32,8 @@ class Game {
       ready: false,
       score: 0,
       position,
-      character: null
+      character: null,
+      isHost: position === 1 // First player is host
     };
     return position;
   }
@@ -62,79 +56,144 @@ class Game {
     });
   }
 }
+// Game management
+const publicGames = new Map();  // For quick play
+const privateGames = new Map(); // For private games
 
-io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+function generateGameId() {
+  return Math.random().toString(36).substr(2, 6).toUpperCase();
+}
+
+function cleanupOldGames() {
+  const now = Date.now();
+  const maxAge = 30 * 60 * 1000; // 30 minutes
   
-  let currentGame = null;
+  // Clean public games
+  publicGames.forEach((game, id) => {
+    if (now - game.createdAt > maxAge || Object.keys(game.players).length === 0) {
+      publicGames.delete(id);
+    }
+  });
+  
+  // Clean private games
+  privateGames.forEach((game, id) => {
+    if (now - game.createdAt > maxAge || Object.keys(game.players).length === 0) {
+      privateGames.delete(id);
+    }
+  });
+}
+
+// Game matching system
+function findAvailablePublicGame() {
+  for (const [id, game] of publicGames) {
+    if (!game.gameStarted && Object.keys(game.players).length < game.maxPlayers) {
+      return id;
+    }
+  }
+  return null;
+}
+
+// Main connection handler
+io.on('connection', (socket) => {
+  let currentGameId = null;
   let currentPlayerId = socket.id;
 
-  // Create new game
-  socket.on('createGame', () => {
-    const gameId = generateGameId();
-    gameLobbies[gameId] = new Game();
-    currentGame = gameLobbies[gameId];
+  // Quick Play - Auto Matchmaking
+  socket.on('quickPlay', ({ character }) => {
+    // Cleanup old games first
+    cleanupOldGames();
+
+    // Find existing public game
+    const existingGameId = findAvailablePublicGame();
     
-    const position = currentGame.addPlayer(currentPlayerId, socket);
-    
-    socket.emit('gameCreated', {
-      gameId,
-      playerId: currentPlayerId,
-      position,
-      isHost: true
-    });
+    if (existingGameId) {
+      joinGame(socket, existingGameId, character, false);
+    } else {
+      // Create new public game
+      const newGameId = generateGameId();
+      const game = new Game(true);
+      publicGames.set(newGameId, game);
+      joinGame(socket, newGameId, character, true);
+    }
   });
 
-  // Join existing game
-  socket.on('joinGame', (gameId) => {
-    if (!gameLobbies[gameId]) {
+  // Create Private Game
+  socket.on('createPrivateGame', ({ character }) => {
+    const gameId = generateGameId();
+    const game = new Game(false);
+    privateGames.set(gameId, game);
+    joinGame(socket, gameId, character, true);
+    socket.emit('privateGameCreated', { gameId });
+  });
+
+  // Join Private Game
+  socket.on('joinPrivateGame', ({ gameId, character }) => {
+    if (privateGames.has(gameId)) {
+      joinGame(socket, gameId, character, false);
+    } else {
       socket.emit('gameError', { message: 'Game not found' });
+    }
+  });
+
+  // Shared join game logic
+  function joinGame(socket, gameId, character, isHost) {
+    const game = publicGames.get(gameId) || privateGames.get(gameId);
+    
+    if (!game || game.gameStarted || Object.keys(game.players).length >= game.maxPlayers) {
+      socket.emit('gameError', { message: 'Cannot join game' });
       return;
     }
 
-    currentGame = gameLobbies[gameId];
-    
-    if (Object.keys(currentGame.players).length >= currentGame.maxPlayers) {
-      socket.emit('gameError', { message: 'Game is full' });
-      return;
-    }
+    currentGameId = gameId;
+    const position = game.addPlayer(currentPlayerId, socket);
+    socket.join(gameId);
 
-    const position = currentGame.addPlayer(currentPlayerId, socket);
-    
-    // Notify new player
+    // Notify player
     socket.emit('gameJoined', {
       gameId,
       playerId: currentPlayerId,
       position,
-      isHost: false
+      isHost,
+      players: Object.values(game.players).map(p => ({
+        id: p.id,
+        character: p.character,
+        position: p.position
+      }))
     });
 
-    // Notify other players in the game
-    currentGame.broadcast('playerJoined', {
+    // Notify others
+    socket.to(gameId).emit('playerJoined', {
       playerId: currentPlayerId,
-      position
+      position,
+      character
     });
-  });
+
+    // Auto-start if full
+    if (Object.keys(game.players).length === game.maxPlayers) {
+      startGame(gameId);
+    }
+  }
 
   // Player ready
-  socket.on('playerReady', ({ gameId, character }) => {
-    if (!currentGame || currentGame.players[currentPlayerId].gameId !== gameId) {
-      socket.emit('gameError', { message: 'Not in this game' });
-      return;
-    }
+  socket.on('playerReady', ({ character }) => {
+    const game = getCurrentGame();
+    if (!game) return;
 
-    currentGame.players[currentPlayerId].ready = true;
-    currentGame.players[currentPlayerId].character = character;
+    game.players[currentPlayerId].ready = true;
+    game.players[currentPlayerId].character = character;
     
-    currentGame.broadcast('playerReady', {
+    socket.to(currentGameId).emit('playerReady', {
       playerId: currentPlayerId,
       character
     });
 
-    if (currentGame.checkAllPlayersReady()) {
-      startGame(currentGame);
+    // Start if enough players are ready
+    const readyPlayers = Object.values(game.players).filter(p => p.ready).length;
+    if (readyPlayers >= 2 && readyPlayers === Object.keys(game.players).length) {
+      startGame(currentGameId);
     }
   });
+
 
   // Player action
   socket.on('playerAction', ({ gameId, action, points }) => {
@@ -155,80 +214,126 @@ io.on('connection', (socket) => {
   });
 
   // Round complete
-  socket.on('roundComplete', ({ gameId }) => {
-    if (!currentGame || 
-        currentGame.players[currentPlayerId].gameId !== gameId ||
-        !currentGame.players[currentPlayerId].isHost) {
-      return;
-    }
+ socket.on('roundComplete', ({ gameId, isPublic }) => {
+  const game = isPublic ? publicGames.get(gameId) : privateGames.get(gameId);
+  if (!game) return;
 
-    currentGame.currentRound++;
-    if (currentGame.currentRound > currentGame.maxRounds) {
-      endGame(currentGame);
-    } else {
-      currentGame.trashType = getRandomTrashType();
-      currentGame.broadcast('startNextRound', {
-        round: currentGame.currentRound,
-        trashType: currentGame.trashType
-      });
-    }
-  });
+  game.currentRound++;
+  if (game.currentRound > game.maxRounds) {
+    endGame(gameId, isPublic);
+  } else {
+    game.trashType = getRandomTrashType();
+    io.to(gameId).emit('startNextRound', {
+      round: game.currentRound,
+      trashType: game.trashType
+    });
+  }
+});
 
-  // Disconnect
+   // Helper function
+  function getCurrentGame() {
+    return publicGames.get(currentGameId) || privateGames.get(currentGameId);
+  }
+
+  // Disconnect handler
   socket.on('disconnect', () => {
-    if (currentGame) {
-      currentGame.players[currentPlayerId].connected = false;
-      currentGame.broadcast('playerDisconnected', {
-        playerId: currentPlayerId
-      });
+    const game = getCurrentGame();
+    if (!game || !game.players[currentPlayerId]) return;
 
-      // If host disconnected, promote another player
-      if (currentGame.players[currentPlayerId].isHost) {
-        const remainingPlayers = Object.values(currentGame.players)
-          .filter(p => p.connected);
-        
-        if (remainingPlayers.length > 0) {
-          const newHostId = remainingPlayers[0].id;
-          currentGame.players[newHostId].isHost = true;
-          remainingPlayers[0].socket.emit('promoteToHost');
-        } else {
-          // No players left, clean up game
-          delete gameLobbies[currentGame.players[currentPlayerId].gameId];
-        }
+    // Mark as disconnected but keep player data
+    game.players[currentPlayerId].connected = false;
+    
+    // Notify others
+    socket.to(currentGameId).emit('playerDisconnected', {
+      playerId: currentPlayerId
+    });
+
+    // Handle host migration
+    if (game.players[currentPlayerId].isHost) {
+      const newHost = Object.values(game.players).find(p => p.connected);
+      if (newHost) {
+        newHost.isHost = true;
+        io.to(newHost.id).emit('promotedToHost');
+      } else if (game.isPublic) {
+        publicGames.delete(currentGameId);
+      } else {
+        privateGames.delete(currentGameId);
       }
     }
   });
 });
 
-function startGame(game) {
+// Game lifecycle functions
+function startGame(gameId) {
+  const game = publicGames.get(gameId) || privateGames.get(gameId);
+  if (!game) return;
+
   game.gameStarted = true;
   game.trashType = getRandomTrashType();
-  game.broadcast('gameStart', {
-    trashType: game.trashType
+  
+  io.to(gameId).emit('gameStart', {
+    trashType: game.trashType,
+    players: Object.values(game.players).map(p => ({
+      id: p.id,
+      character: p.character,
+      position: p.position
+    }))
   });
 }
+function endGame(gameId, isPublic) {
+  // Get the game from the correct collection
+  const game = isPublic ? publicGames.get(gameId) : privateGames.get(gameId);
+  if (!game) return;
 
-function endGame(game) {
-  // Calculate winner
-  const scores = Object.fromEntries(
-    Object.values(game.players).map(p => [p.id, p.score])
-  );
-  const maxScore = Math.max(...Object.values(scores));
-  const winnerId = Object.keys(scores).find(id => scores[id] === maxScore);
-
-  game.broadcast('gameOver', {
-    scores,
-    winnerId
+  // Calculate scores and winner
+  const scores = {};
+  let maxScore = -1;
+  let winnerId = null;
+  
+  Object.values(game.players).forEach(player => {
+    scores[player.id] = player.score;
+    if (player.score > maxScore) {
+      maxScore = player.score;
+      winnerId = player.id;
+    } else if (player.score === maxScore) {
+      // Handle tie by selecting randomly
+      winnerId = Math.random() > 0.5 ? winnerId : player.id;
+    }
   });
 
-  // Clean up game
-  delete gameLobbies[game.players[winnerId].gameId];
+  // Broadcast game over to all players
+  io.to(gameId).emit('gameOver', {
+    scores,
+    winnerId,
+    players: Object.values(game.players).map(p => ({
+      id: p.id,
+      character: p.character,
+      position: p.position,
+      score: p.score
+    }))
+  });
+
+  // Clean up game after short delay
+  setTimeout(() => {
+    if (isPublic) {
+      publicGames.delete(gameId);
+    } else {
+      privateGames.delete(gameId);
+    }
+    console.log(`Cleaned up game ${gameId}`);
+  }, 30000); // 30 second delay to allow clients to process
 }
 
 function getRandomTrashType() {
   const types = ['golden', 'handbag', 'trashcan'];
   return types[Math.floor(Math.random() * types.length)];
 }
+// Start cleanup interval
+setInterval(cleanupOldGames, 5 * 60 * 1000); // Every 5 minutes
+
+http.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
 http.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
