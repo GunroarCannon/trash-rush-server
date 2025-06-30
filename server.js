@@ -334,7 +334,3 @@ setInterval(cleanupOldGames, 5 * 60 * 1000); // Every 5 minutes
 http.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-http.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
