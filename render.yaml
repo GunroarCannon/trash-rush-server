@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: trash-game-server
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    env: node
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+        
