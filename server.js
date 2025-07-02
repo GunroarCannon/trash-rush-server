@@ -304,21 +304,26 @@ class GameServer {
     game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
   }
 
-  // Player actions
-  setPlayerReady(socket, { gameId, character, ready }) {
+setPlayerReady(socket, { gameId, character, ready }) {
     const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
     if (!game || !game.players.includes(socket.id)) return;
 
-    game.readyStates[socket.id] = ready;
-    this.players[socket.id].character = character;
+    // Only proceed if ready state actually changed
+    if (game.readyStates[socket.id] !== ready) {
+        game.readyStates[socket.id] = ready;
+        this.players[socket.id].character = character;
+        this.broadcastReadyStates(gameId);
 
-    this.broadcastReadyStates(gameId);
-
-    const allReady = game.players.every(id => game.readyStates[id]);
-    if (allReady && game.players.length > 1) {
-      this.startGame(gameId, !!this.publicGames.get(gameId));
+        // Only check ready states if this was a "ready" action
+        if (ready) {
+            const allReady = game.players.every(id => game.readyStates[id]);
+            if (allReady && game.players.length > 1 && !game.gameStarted) {
+                game.gameStarted = true; // Mark as started to prevent duplicate triggers
+                this.startGame(gameId, !!this.publicGames.get(gameId));
+            }
+        }
     }
-  }
+}
 
   handlePlayerAction(socket, { gameId, action, points, powerup }) {
     const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
