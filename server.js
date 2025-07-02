@@ -38,15 +38,28 @@ class GameServer {
     const io = socketio(server, {
       cors: {
         origin: "*",
-        methods: ["GET", "POST"]
-      }
+        methods: ["GET", "POST"],
+        credentials: true
+      },
+      transports: ['websocket', 'polling'], // Important for Render
+      allowUpgrades: true,
+      pingTimeout: 60000,
+      pingInterval: 25000
     });
 
-    // Keep-alive
+    // Add explicit WebSocket upgrade handler
+    server.on('upgrade', (req, socket, head) => {
+      console.log('WebSocket upgrade requested');
+      io.engine.handleUpgrade(req, socket, head, (ws) => {
+        io.engine.onWebSocket(req, ws);
+      });
+    });
+
+    // Keep-alive (modified for Render)
     setInterval(() => {
       if (Date.now() - this.lastActivity > this.ACTIVITY_TIMEOUT) {
         console.log('Performing self-ping to maintain instance');
-        fetch('http://localhost:3000/health')
+        fetch(`http://localhost:${process.env.PORT || 3000}/health`)
           .catch(err => console.error('Keep-alive failed:', err));
       }
     }, 60000);
