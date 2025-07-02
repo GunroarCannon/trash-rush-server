@@ -80,6 +80,7 @@ class GameServer {
       socket.on('playerReady', (data) => this.setPlayerReady(socket, data));
       socket.on('playerAction', (data) => this.handlePlayerAction(socket, data));
       socket.on('roundComplete', () => this.handleRoundComplete(socket));
+      socket.on('startGameForReal', (data) => this.startGameForReal(socket, data) );
     });
 
     const PORT = process.env.PORT || 3000;
@@ -318,12 +319,37 @@ setPlayerReady(socket, { gameId, character, ready }) {
         if (ready) {
             const allReady = game.players.every(id => game.readyStates[id]);
             if (allReady && game.players.length > 1 && !game.gameStarted) {
+                socket.to(gameId).emit('startGameCountDown', {
+                    round: game.round,
+                    trashType: game.trashType
+                });
+
+                //game.gameStarted = true; // Mark as started to prevent duplicate triggers
+                //this.startGame(gameId, !!this.publicGames.get(gameId));
+            }
+        }
+        else{
+            socket.to(gameId).emit('cancelGameCountDown', {});
+        }
+    }
+}
+  
+    startGameForReal(socket, { gameId }) {
+        if (gameId) {
+          const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+        
+            if (game && !game.gameStarted) {
                 game.gameStarted = true; // Mark as started to prevent duplicate triggers
                 this.startGame(gameId, !!this.publicGames.get(gameId));
             }
         }
     }
-}
+
+    joinPrivateGame(socket, data) {
+        const { gameId, character } = data;
+        this.joinGame(socket, gameId, character, false);
+      }
+      
 
   handlePlayerAction(socket, { gameId, action, points, powerup }) {
     const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
