@@ -1,387 +1,265 @@
-// server.js
 const express = require('express');
-const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+const http = require('http');
+const socketio = require('socket.io');
+const seedrandom = require('seedrandom');
 
-const PORT = process.env.PORT || 3000;
-
-class Game {
-  constructor(isPublic = false) {
-    this.players = {};
-    this.gameStarted = false;
-    this.maxPlayers = 4;
-    this.currentRound = 1;
-    this.maxRounds = 3;
-    this.trashType = null;
-    this.isPublic = isPublic;
-    this.createdAt = Date.now();
+class GameServer {
+  constructor() {
+    this.games = {}; // Active game sessions
+    this.players = {}; // Connected players
+    this.powerupManager = new PowerupManager();
   }
 
-  addPlayer(playerId, socket) {
-    const position = Object.keys(this.players).length + 1;
-    this.players[playerId] = {
-      id: playerId,
-      socket,
-      connected: true,
-      ready: false,
-      score: 0,
-      position,
-      character: null,
-      isHost: position === 1 // First player is host
-    };
-    return position;
-  }
-
-  removePlayer(playerId) {
-    delete this.players[playerId];
-  }
-
-  checkAllPlayersReady() {
-    const connectedPlayers = Object.values(this.players).filter(p => p.connected);
-    const readyPlayers = connectedPlayers.filter(p => p.ready);
-    return connectedPlayers.length >= 2 && readyPlayers.length === connectedPlayers.length;
-  }
-
-  broadcast(event, data, excludePlayerId = null) {
-    Object.values(this.players).forEach(player => {
-      if (player.connected && player.id !== excludePlayerId) {
-        player.socket.emit(event, data);
+  initialize() {
+    const app = express();
+    const server = http.createServer(app);
+    const io = socketio(server, {
+      cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
       }
     });
-  }
-}
-// Game management
-const publicGames = new Map();  // For quick play
-const privateGames = new Map(); // For private games
 
-function generateGameId() {
-  return Math.random().toString(36).substr(2, 6).toUpperCase();
-}
+    io.on('connection', (socket) => {
+      console.log(`Player connected: ${socket.id}`);
+      this.players[socket.id] = { socket, gameId: null };
 
-function cleanupOldGames() {
-  const now = Date.now();
-  const maxAge = 30 * 60 * 1000; // 30 minutes
-  
-  // Clean public games
-  publicGames.forEach((game, id) => {
-    if (now - game.createdAt > maxAge || Object.keys(game.players).length === 0) {
-      publicGames.delete(id);
-    }
-  });
-  
-  // Clean private games
-  privateGames.forEach((game, id) => {
-    if (now - game.createdAt > maxAge || Object.keys(game.players).length === 0) {
-      privateGames.delete(id);
-    }
-  });
-}
-
-// Game matching system
-function findAvailablePublicGame() {
-  for (const [id, game] of publicGames) {
-    if (!game.gameStarted && Object.keys(game.players).length < game.maxPlayers) {
-      return id;
-    }
-  }
-  return null;
-}
-
-
-// Main connection handler
-io.on('connection', (socket) => {
-  let currentGameId = null;
-  let currentPlayerId = socket.id;// Track ready states per game
-
-
-    
-    socket.on('joinGame', (gameId) => {
-        currentGameId = gameId;
-        gameReadyStates[gameId] = gameReadyStates[gameId] || {};
-        socket.join(gameId);
-        updatePlayers(gameId);
+      socket.on('disconnect', () => this.handleDisconnect(socket));
+      socket.on('createGame', () => this.createGame(socket));
+      socket.on('joinGame', (gameId) => this.joinGame(socket, gameId));
+      socket.on('playerReady', (data) => this.setPlayerReady(socket, data));
+      socket.on('playerAction', (data) => this.handlePlayerAction(socket, data));
+      socket.on('roundComplete', () => this.handleRoundComplete(socket));
     });
-    
-    socket.on('playerReady', ({ isReady }) => {
-        if (!currentGameId) return;
-        
-        // Update ready state
-        gameReadyStates[currentGameId][socket.id] = isReady;
-        
-        // Broadcast new ready states
-        io.to(currentGameId).emit('readyStatesUpdated', gameReadyStates[currentGameId]);
-        
-        // Check if all players are ready
-        const players = getPlayersInRoom(currentGameId);
-        const allReady = players.length >= 2 && 
-                        players.every(player => gameReadyStates[currentGameId][player.id]);
-        
-        if (allReady) {
-            // Start countdown
-            io.to(currentGameId).emit('gameStarting');
-            setTimeout(() => {
-                io.to(currentGameId).emit('gameStart');
-            }, 3000); // 3 second countdown
-        }
+
+    server.listen(3000, () => console.log('Server running on port 3000'));
+  }
+
+  // Enhanced Game Creation with Full State
+  createGame(socket) {
+    const gameId = `game_${Date.now()}`;
+    this.games[gameId] = {
+      id: gameId,
+      players: [socket.id],
+      host: socket.id,
+      readyStates: {},
+      round: 1,
+      maxRounds: 3,
+      gameState: 'lobby',
+      trashType: this.getRandomTrashType(),
+      negativeMode: false,
+      scores: {},
+      powerups: this.powerupManager.generatePowerupPool(gameId)
+    };
+
+    this.players[socket.id].gameId = gameId;
+    socket.emit('gameCreated', { 
+      gameId,
+      isHost: true,
+      seed: gameId // Using gameId as seed for deterministic randomness
     });
-    
-    function updatePlayers(gameId) {
-        io.to(gameId).emit('playersUpdated', {
-            players: getPlayersInRoom(gameId)
-        });
-    }
-    
-    function getPlayersInRoom(gameId) {
-        const sockets = Array.from(io.sockets.adapter.rooms.get(gameId) || []);
-        return sockets.map(socketId => {
-            const socket = io.sockets.sockets.get(socketId);
-            return {
-                id: socket.id,
-                character: socket.character
-            };
-        });
-    }
-});
+  }
 
-  // Quick Play - Auto Matchmaking
-  socket.on('quickPlay', ({ character }) => {
-    // Cleanup old games first
-    cleanupOldGames();
-
-    // Find existing public game
-    const existingGameId = findAvailablePublicGame();
-    
-    if (existingGameId) {
-      joinGame(socket, existingGameId, character, false);
-    } else {
-      // Create new public game
-      const newGameId = generateGameId();
-      const game = new Game(true);
-      publicGames.set(newGameId, game);
-      joinGame(socket, newGameId, character, true);
-    }
-  });
-
-  // Create Private Game
-  socket.on('createPrivateGame', ({ character }) => {
-    const gameId = generateGameId();
-    const game = new Game(false);
-    privateGames.set(gameId, game);
-    joinGame(socket, gameId, character, true);
-    socket.emit('privateGameCreated', { gameId });
-  });
-
-  // Join Private Game
-  socket.on('joinPrivateGame', ({ gameId, character }) => {
-    if (privateGames.has(gameId)) {
-      joinGame(socket, gameId, character, false);
-    } else {
+  // Enhanced Player Join with Initialization
+  joinGame(socket, gameId) {
+    if (!this.games[gameId]) {
       socket.emit('gameError', { message: 'Game not found' });
-    }
-  });
-
-  // Shared join game logic
-  function joinGame(socket, gameId, character, isHost) {
-    const game = publicGames.get(gameId) || privateGames.get(gameId);
-    
-    if (!game || game.gameStarted || Object.keys(game.players).length >= game.maxPlayers) {
-      socket.emit('gameError', { message: 'Cannot join game' });
       return;
     }
 
-    currentGameId = gameId;
-    const position = game.addPlayer(currentPlayerId, socket);
-    socket.join(gameId);
+    const game = this.games[gameId];
+    if (game.players.length >= 4) {
+      socket.emit('gameError', { message: 'Game is full' });
+      return;
+    }
 
-    // Notify player
+    game.players.push(socket.id);
+    this.players[socket.id].gameId = gameId;
+    game.scores[socket.id] = 0;
+
+    // Notify all players
+    io.to(gameId).emit('playerJoined', {
+      playerId: socket.id,
+      position: game.players.length // 1-4
+    });
+
     socket.emit('gameJoined', {
       gameId,
-      playerId: currentPlayerId,
-      position,
-      isHost,
-      players: Object.values(game.players).map(p => ({
-        id: p.id,
-        character: p.character,
-        position: p.position
-      }))
+      isHost: false,
+      seed: gameId,
+      currentRound: game.round
     });
-
-    // Notify others
-    socket.to(gameId).emit('playerJoined', {
-      playerId: currentPlayerId,
-      position,
-      character
-    });
-
-    // Auto-start if full
-    if (Object.keys(game.players).length === game.maxPlayers) {
-      startGame(gameId);
-    }
   }
 
-  // Player ready
-  socket.on('playerReady', ({ character }) => {
-    const game = getCurrentGame();
-    if (!game) return;
-
-    game.players[currentPlayerId].ready = true;
-    game.players[currentPlayerId].character = character;
-    
-    socket.to(currentGameId).emit('playerReady', {
-      playerId: currentPlayerId,
-      character
+  // Full Game State Synchronization
+  syncGameState(gameId) {
+    const game = this.games[gameId];
+    io.to(gameId).emit('gameStateUpdate', {
+      round: game.round,
+      gameState: game.gameState,
+      negativeMode: game.negativeMode,
+      scores: game.scores,
+      remainingTime: game.timer?.remaining || 0
     });
+  }
 
-    // Start if enough players are ready
-    const readyPlayers = Object.values(game.players).filter(p => p.ready).length;
-    if (readyPlayers >= 2 && readyPlayers === Object.keys(game.players).length) {
-      startGame(currentGameId);
-    }
-  });
-
-
-  // Player action
-  socket.on('playerAction', ({ gameId, action, points }) => {
-    if (!currentGame || currentGame.players[currentPlayerId].gameId !== gameId) {
-      return;
-    }
+  // Enhanced Action Handling
+  handlePlayerAction(socket, { action, points, powerup }) {
+    const playerId = socket.id;
+    const game = this.getPlayerGame(playerId);
+    if (!game) return;
 
     switch(action) {
       case 'tapTrash':
-        currentGame.players[currentPlayerId].score += points;
-        currentGame.broadcast('playerAction', {
-          playerId: currentPlayerId,
-          action,
-          points
-        });
+        this.handleTrashTap(game, playerId, points);
         break;
+      case 'selectPowerup':
+        this.handlePowerupSelection(game, playerId, powerup);
+        break;
+      // Add other actions as needed
     }
-  });
-
-  // Round complete
- socket.on('roundComplete', ({ gameId, isPublic }) => {
-  const game = isPublic ? publicGames.get(gameId) : privateGames.get(gameId);
-  if (!game) return;
-
-  game.currentRound++;
-  if (game.currentRound > game.maxRounds) {
-    endGame(gameId, isPublic);
-  } else {
-    game.trashType = getRandomTrashType();
-    io.to(gameId).emit('startNextRound', {
-      round: game.currentRound,
-      trashType: game.trashType
-    });
-  }
-});
-
-   // Helper function
-  function getCurrentGame() {
-    return publicGames.get(currentGameId) || privateGames.get(currentGameId);
   }
 
-  // Disconnect handler
-  socket.on('disconnect', () => {
-    const game = getCurrentGame();
-    if (!game || !game.players[currentPlayerId]) return;
-
-    // Mark as disconnected but keep player data
-    game.players[currentPlayerId].connected = false;
-    
-    // Notify others
-    socket.to(currentGameId).emit('playerDisconnected', {
-      playerId: currentPlayerId
-    });
-
-    // Handle host migration
-    if (game.players[currentPlayerId].isHost) {
-      const newHost = Object.values(game.players).find(p => p.connected);
-      if (newHost) {
-        newHost.isHost = true;
-        io.to(newHost.id).emit('promotedToHost');
-      } else if (game.isPublic) {
-        publicGames.delete(currentGameId);
-      } else {
-        privateGames.delete(currentGameId);
-      }
-    }
-  });
-});
-
-// Game lifecycle functions
-function startGame(gameId) {
-  const game = publicGames.get(gameId) || privateGames.get(gameId);
-  if (!game) return;
-
-  game.gameStarted = true;
-  game.trashType = getRandomTrashType();
-  
-  io.to(gameId).emit('gameStart', {
-    trashType: game.trashType,
-    players: Object.values(game.players).map(p => ({
-      id: p.id,
-      character: p.character,
-      position: p.position
-    }))
-  });
-}
-function endGame(gameId, isPublic) {
-  // Get the game from the correct collection
-  const game = isPublic ? publicGames.get(gameId) : privateGames.get(gameId);
-  if (!game) return;
-
-  // Calculate scores and winner
-  const scores = {};
-  let maxScore = -1;
-  let winnerId = null;
-  
-  Object.values(game.players).forEach(player => {
-    scores[player.id] = player.score;
-    if (player.score > maxScore) {
-      maxScore = player.score;
-      winnerId = player.id;
-    } else if (player.score === maxScore) {
-      // Handle tie by selecting randomly
-      winnerId = Math.random() > 0.5 ? winnerId : player.id;
-    }
-  });
-
-  // Broadcast game over to all players
-  io.to(gameId).emit('gameOver', {
-    scores,
-    winnerId,
-    players: Object.values(game.players).map(p => ({
-      id: p.id,
-      character: p.character,
-      position: p.position,
-      score: p.score
-    }))
-  });
-
-  // Clean up game after short delay
-  setTimeout(() => {
-    if (isPublic) {
-      publicGames.delete(gameId);
+  // Trash Tap with Negative Mode Check
+  handleTrashTap(game, playerId, points) {
+    if (game.negativeMode) {
+      // Penalize player in negative mode
+      game.scores[playerId] = Math.max(0, game.scores[playerId] - 2);
+      io.to(game.id).emit('negativeTap', { playerId });
     } else {
-      privateGames.delete(gameId);
+      // Normal scoring with potential multipliers
+      game.scores[playerId] += points;
+      io.to(game.id).emit('scoreUpdate', { 
+        playerId, 
+        score: game.scores[playerId],
+        points 
+      });
     }
-    console.log(`Cleaned up game ${gameId}`);
-  }, 30000); // 30 second delay to allow clients to process
+  }
+
+  // Powerup Selection with Validation
+  handlePowerupSelection(game, playerId, powerupName) {
+    if (game.gameState !== 'powerup-selection') return;
+
+    const powerup = this.powerupManager.getPowerup(powerupName);
+    if (!powerup) return;
+
+    // Apply powerup logic (could be client-side only)
+    io.to(game.id).emit('powerupSelected', {
+      playerId,
+      powerup: powerupName,
+      description: powerup.description
+    });
+
+    // Check if all players have selected
+    if (Object.keys(game.powerupSelections).length === game.players.length) {
+      this.startNextRound(game);
+    }
+  }
+
+  // Round Management
+  startRound(game) {
+    game.gameState = 'playing';
+    game.roundTimer = setTimeout(() => {
+      this.endRound(game);
+    }, 30000); // 30 second rounds
+
+    // Random negative mode trigger (30% chance)
+    if (Math.random() < 0.3) {
+      setTimeout(() => {
+        game.negativeMode = true;
+        io.to(game.id).emit('negativeModeStart');
+        setTimeout(() => {
+          game.negativeMode = false;
+          io.to(game.id).emit('negativeModeEnd');
+        }, 5000); // 5 second negative mode
+      }, 15000); // Start at 15 seconds
+    }
+
+    this.syncGameState(game.id);
+  }
+
+  endRound(game) {
+    clearTimeout(game.roundTimer);
+    game.gameState = 'powerup-selection';
+    game.powerupSelections = {};
+    
+    // Get 3 random powerups for selection
+    const availablePowerups = this.powerupManager.getRoundPowerups(game.id, game.round);
+    io.to(game.id).emit('roundComplete', { 
+      powerups: availablePowerups,
+      scores: game.scores 
+    });
+
+    this.syncGameState(game.id);
+  }
+
+  startNextRound(game) {
+    game.round++;
+    game.trashType = this.getRandomTrashType(game.round);
+    
+    if (game.round > game.maxRounds) {
+      this.endGame(game);
+    } else {
+      io.to(game.id).emit('startNextRound', {
+        round: game.round,
+        trashType: game.trashType
+      });
+      this.startRound(game);
+    }
+  }
+
+  endGame(game) {
+    // Determine winner
+    const winnerId = Object.entries(game.scores).reduce((a, b) => 
+      a[1] > b[1] ? a : b
+    )[0];
+
+    io.to(game.id).emit('gameOver', {
+      winnerId,
+      scores: game.scores,
+      players: game.players.map(id => ({
+        id,
+        score: game.scores[id],
+        position: game.players.indexOf(id) + 1
+      }))
+    });
+
+    delete this.games[game.id];
+  }
+
+  // Helper Methods
+  getRandomTrashType(round) {
+    const types = ['handbag', 'trashcan'];
+    if (round === 3) return 'golden'; // Final round always golden
+    return types[Math.floor(Math.random() * types.length)];
+  }
+
+  getPlayerGame(playerId) {
+    const gameId = this.players[playerId]?.gameId;
+    return gameId ? this.games[gameId] : null;
+  }
 }
 
-function getRandomTrashType() {
-  const types = ['golden', 'handbag', 'trashcan'];
-  return types[Math.floor(Math.random() * types.length)];
-}
-// Start cleanup interval
-setInterval(cleanupOldGames, 5 * 60 * 1000); // Every 5 minutes
+// Powerup Manager (matches frontend)
+class PowerupManager {
+  constructor() {
+    this.powerups = { /* Same as frontend powerups definition */ };
+  }
 
-http.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+  getPowerup(name) {
+    return this.powerups[name];
+  }
+
+  generatePowerupPool(gameId) {
+    const rng = seedrandom(gameId);
+    const allPowerups = Object.keys(this.powerups);
+    const shuffled = [...allPowerups].sort(() => rng() - 0.5);
+    return shuffled;
+  }
+
+  getRoundPowerups(gameId, round) {
+    const pool = this.generatePowerupPool(gameId);
+    return pool.slice(0, 3); // Return 3 powerups per round
+  }
+}
