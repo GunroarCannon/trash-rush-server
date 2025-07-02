@@ -130,7 +130,7 @@ class GameServer {
       socket.emit('gameError', { message: game ? 'Game is full' : 'Game not found' });
       return false;
     }
-
+    console.log('player joined yoh');
     game.players.push(socket.id);
     this.players[socket.id] = { socket, gameId, character };
     game.scores[socket.id] = 0;
@@ -317,8 +317,10 @@ setPlayerReady(socket, { gameId, character, ready }) {
 
         // Only check ready states if this was a "ready" action
         if (ready) {
+            console.log('another player ready!!');
             const allReady = game.players.every(id => game.readyStates[id]);
             if (allReady && game.players.length > 1 && !game.gameStarted) {
+              console.log('allready, count downnn');
                 socket.to(gameId).emit('startGameCountDown', {
                     round: game.round,
                     trashType: game.trashType
