@@ -18,6 +18,17 @@ class GameServer {
     const app = express();
     app.use(express.json());
 
+    // Enhanced CORS middleware for all routes
+    app.use((req, res, next) => {
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        if (req.method === 'OPTIONS') {
+            return res.status(200).end();
+        }
+        next();
+    });
+
     // Wake endpoint
     app.post('/wake', (req, res) => {
       console.log('Received wake call from client');
@@ -55,13 +66,14 @@ class GameServer {
       });
     });
 
-    // Keep-alive (modified for Render)
+    // Keep-alive using Render's environment
     setInterval(() => {
-      if (Date.now() - this.lastActivity > this.ACTIVITY_TIMEOUT) {
-        console.log('Performing self-ping to maintain instance');
-        fetch(`http://localhost:${process.env.PORT || 3000}/health`)
-          .catch(err => console.error('Keep-alive failed:', err));
-      }
+        if (Date.now() - this.lastActivity > this.ACTIVITY_TIMEOUT) {
+            console.log('Performing keep-alive ping');
+            fetch(`https://trash-rush-server.onrender.com//health`)
+                .then(() => console.log('Keep-alive successful'))
+                .catch(err => console.error('Keep-alive failed:', err));
+        }
     }, 60000);
 
     // Socket.io events
@@ -78,7 +90,13 @@ class GameServer {
       socket.on('roundComplete', () => this.handleRoundComplete(socket));
     });
 
-    server.listen(3000, () => console.log('Server running on port 3000'));
+    // Use Render's PORT environment variable
+    const PORT = process.env.PORT || 3000;
+    server.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server running on port ${PORT}`);
+        console.log(`WebSocket available at wss://your-render-url.onrender.com`);
+    });
+
   }
 
   // Combined game creation logic
