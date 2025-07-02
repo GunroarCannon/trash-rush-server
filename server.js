@@ -20,13 +20,13 @@ class GameServer {
 
     // Enhanced CORS middleware for all routes
     app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
-        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Origin', '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-wake-up'');
         if (req.method === 'OPTIONS') {
-            return res.status(200).end();
-        }
-        next();
+        return res.status(200).end();
+      }
+      next();
     });
 
     // Wake endpoint
@@ -40,6 +40,12 @@ class GameServer {
       });
     });
 
+    app.options('/wake', (req, res) => {
+      res.header('Access-Control-Allow-Headers', 'x-wake-up');
+      res.status(200).end();
+    });
+
+
     // Health check
     app.get('/health', (req, res) => {
       res.status(200).send('OK');
@@ -50,7 +56,8 @@ class GameServer {
       cors: {
         origin: "*",
         methods: ["GET", "POST"],
-        credentials: true
+        allowedHeaders: ["x-wake-up"].
+          credentials: true
       },
       transports: ['websocket', 'polling'],
       allowUpgrades: true,
@@ -60,12 +67,12 @@ class GameServer {
 
     // Keep-alive using Render's environment
     setInterval(() => {
-        if (Date.now() - this.lastActivity > this.ACTIVITY_TIMEOUT) {
-            console.log('Performing keep-alive ping');
-            fetch(`https://trash-rush-server.onrender.com/health`)
-                .then(() => console.log('Keep-alive successful'))
-                .catch(err => console.error('Keep-alive failed:', err));
-        }
+      if (Date.now() - this.lastActivity > this.ACTIVITY_TIMEOUT) {
+        console.log('Performing keep-alive ping');
+        fetch(`https://trash-rush-server.onrender.com/health`)
+          .then(() => console.log('Keep-alive successful'))
+          .catch(err => console.error('Keep-alive failed:', err));
+      }
     }, 60000);
 
     // Socket.io events
@@ -80,12 +87,20 @@ class GameServer {
       socket.on('playerReady', (data) => this.setPlayerReady(socket, data));
       socket.on('playerAction', (data) => this.handlePlayerAction(socket, data));
       socket.on('roundComplete', () => this.handleRoundComplete(socket));
-      socket.on('startGameForReal', (data) => this.startGameForReal(socket, data) );
+      socket.on('startGameForReal', (data) => this.startGameForReal(socket, data));
+    });
+
+    this.io.of('/').adapter.on('join-room', (room, id) => {
+      console.log(`[${id}] joined room ${room}`);
+    });
+
+    this.io.of('/').adapter.on('leave-room', (room, id) => {
+      console.log(`[${id}] left room ${room}`);
     });
 
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running on port ${PORT}`);
+      console.log(`Server running on port ${PORT}`);
     });
   }
 
@@ -116,7 +131,8 @@ class GameServer {
     }
 
     this.players[socket.id].gameId = gameId;
-    socket.emit(isPublic ? 'gameCreated' : 'privateGameCreated', { 
+    socket.join(gameId);
+    socket.emit(isPublic ? 'gameCreated' : 'privateGameCreated', {
       gameId,
       isHost: true,
       seed: gameId
@@ -135,6 +151,7 @@ class GameServer {
     game.players.push(socket.id);
     this.players[socket.id] = { socket, gameId, character };
     game.scores[socket.id] = 0;
+    socket.join(gameId);
 
     socket.to(gameId).emit('playerJoined', {
       playerId: socket.id,
@@ -163,7 +180,7 @@ class GameServer {
 
   handleQuickPlay(socket, { character }) {
     this.cleanupOldGames();
-    
+
     let gameId;
     for (const [id, game] of this.publicGames) {
       if (!game.gameStarted && game.players.length < 4) {
@@ -183,7 +200,7 @@ class GameServer {
   // Player management
   handleDisconnect(socket) {
     const player = this.players[socket.id];
-    console.log('Disconnecting a player0',socket.id);
+    console.log('Disconnecting a player0', socket.id);
     if (!player) return;
 
     const gameId = player.gameId;
@@ -229,7 +246,7 @@ class GameServer {
 
     game.gameStarted = true;
     game.trashType = this.getRandomTrashType();
-    
+
     game.players.forEach(playerId => {
       this.players[playerId].socket.emit('gameStart', {
         trashType: game.trashType,
@@ -248,7 +265,7 @@ class GameServer {
 
     let maxScore = -1;
     let winnerId = null;
-    
+
     Object.entries(game.scores).forEach(([playerId, score]) => {
       if (score > maxScore) {
         maxScore = score;
@@ -285,7 +302,7 @@ class GameServer {
   cleanupOldGames() {
     const now = Date.now();
     const maxAge = 30 * 60 * 1000; // 30 minutes
-    
+
     [this.publicGames, this.privateGames].forEach(gameMap => {
       for (const [id, game] of gameMap) {
         if (now - game.createdAt > maxAge || game.players.length === 0) {
@@ -312,56 +329,56 @@ class GameServer {
     game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
   }
 
-setPlayerReady(socket, { gameId, character, ready }) {
+  setPlayerReady(socket, { gameId, character, ready }) {
     const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
-    
+
     console.log('tryin toready');
     if (!game || !game.players.includes(socket.id)) return;
-      console.log('moving on');
+    console.log('moving on');
 
     // Only proceed if ready state actually changed
     if (game.readyStates[socket.id] !== ready) {
-        game.readyStates[socket.id] = ready;
-        this.players[socket.id].character = character;
-        this.broadcastReadyStates(gameId);
+      game.readyStates[socket.id] = ready;
+      this.players[socket.id].character = character;
+      this.broadcastReadyStates(gameId);
 
-        // Only check ready states if this was a "ready" action
-        if (ready) {
-            console.log('another player ready!!');
-            const allReady = game.players.every(id => game.readyStates[id]);
-            if (allReady && game.players.length > 1 && !game.gameStarted) {
-              console.log('allready, count downnn');
-                socket.to(gameId).emit('startGameCountDown', {
-                    round: game.round,
-                    trashType: game.trashType
-                });
+      // Only check ready states if this was a "ready" action
+      if (ready) {
+        console.log('another player ready!!');
+        const allReady = game.players.every(id => game.readyStates[id]);
+        if (allReady && game.players.length > 1 && !game.gameStarted) {
+          console.log('allready, count downnn');
+          socket.to(gameId).emit('startGameCountDown', {
+            round: game.round,
+            trashType: game.trashType
+          });
 
-                //game.gameStarted = true; // Mark as started to prevent duplicate triggers
-                //this.startGame(gameId, !!this.publicGames.get(gameId));
-            }
+          //game.gameStarted = true; // Mark as started to prevent duplicate triggers
+          //this.startGame(gameId, !!this.publicGames.get(gameId));
         }
-        else{
-            socket.to(gameId).emit('cancelGameCountDown', {});
-        }
-    }
-}
-  
-    startGameForReal(socket, { gameId }) {
-        if (gameId) {
-          const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
-        
-            if (game && !game.gameStarted) {
-                game.gameStarted = true; // Mark as started to prevent duplicate triggers
-                this.startGame(gameId, !!this.publicGames.get(gameId));
-            }
-        }
-    }
-
-    joinPrivateGame(socket, data) {
-        const { gameId, character } = data;
-        this.joinGame(socket, gameId, character, false);
       }
-      
+      else {
+        socket.to(gameId).emit('cancelGameCountDown', {});
+      }
+    }
+  }
+
+  startGameForReal(socket, { gameId }) {
+    if (gameId) {
+      const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+
+      if (game && !game.gameStarted) {
+        game.gameStarted = true; // Mark as started to prevent duplicate triggers
+        this.startGame(gameId, !!this.publicGames.get(gameId));
+      }
+    }
+  }
+
+  joinPrivateGame(socket, data) {
+    const { gameId, character } = data;
+    this.joinGame(socket, gameId, character, false);
+  }
+
 
   handlePlayerAction(socket, { gameId, action, points, powerup }) {
     const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
