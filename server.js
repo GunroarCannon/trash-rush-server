@@ -59,12 +59,12 @@ class GameServer {
     });
 
     // Add explicit WebSocket upgrade handler
-    server.on('upgrade', (req, socket, head) => {
+    /*server.on('upgrade', (req, socket, head) => {
       console.log('WebSocket upgrade requested');
       io.engine.handleUpgrade(req, socket, head, (ws) => {
         io.engine.onWebSocket(req, ws);
       });
-    });
+    });*/
 
     // Keep-alive using Render's environment
     setInterval(() => {
