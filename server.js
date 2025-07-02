@@ -46,38 +46,30 @@ class GameServer {
     });
 
     const server = http.createServer(app);
-    const io = socketio(server, {
+    this.io = socketio(server, {
       cors: {
         origin: "*",
         methods: ["GET", "POST"],
         credentials: true
       },
-      transports: ['websocket', 'polling'], // Important for Render
+      transports: ['websocket', 'polling'],
       allowUpgrades: true,
       pingTimeout: 60000,
       pingInterval: 25000
     });
 
-    // Add explicit WebSocket upgrade handler
-    /*server.on('upgrade', (req, socket, head) => {
-      console.log('WebSocket upgrade requested');
-      io.engine.handleUpgrade(req, socket, head, (ws) => {
-        io.engine.onWebSocket(req, ws);
-      });
-    });*/
-
     // Keep-alive using Render's environment
     setInterval(() => {
         if (Date.now() - this.lastActivity > this.ACTIVITY_TIMEOUT) {
             console.log('Performing keep-alive ping');
-            fetch(`https://trash-rush-server.onrender.com//health`)
+            fetch(`https://trash-rush-server.onrender.com/health`)
                 .then(() => console.log('Keep-alive successful'))
                 .catch(err => console.error('Keep-alive failed:', err));
         }
     }, 60000);
 
     // Socket.io events
-    io.on('connection', (socket) => {
+    this.io.on('connection', (socket) => {
       console.log(`Player connected: ${socket.id}`);
       this.players[socket.id] = { socket, gameId: null };
 
@@ -90,16 +82,13 @@ class GameServer {
       socket.on('roundComplete', () => this.handleRoundComplete(socket));
     });
 
-    // Use Render's PORT environment variable
     const PORT = process.env.PORT || 3000;
     server.listen(PORT, '0.0.0.0', () => {
         console.log(`Server running on port ${PORT}`);
-        console.log(`WebSocket available at wss://your-render-url.onrender.com`);
     });
-
   }
 
-  // Combined game creation logic
+  // Game management methods
   createGame(socket, isPublic = true) {
     const gameId = `game_${Date.now()}`;
     const game = {
@@ -134,7 +123,6 @@ class GameServer {
     return gameId;
   }
 
-  // Enhanced join game with both public/private support
   joinGame(socket, gameId, character, isPublic = true) {
     const game = isPublic ? this.publicGames.get(gameId) : this.privateGames.get(gameId);
     if (!game || game.players.length >= 4) {
@@ -143,10 +131,9 @@ class GameServer {
     }
 
     game.players.push(socket.id);
-    this.players[socket.id] = { socket, gameId };
+    this.players[socket.id] = { socket, gameId, character };
     game.scores[socket.id] = 0;
 
-    // Notify all players
     socket.to(gameId).emit('playerJoined', {
       playerId: socket.id,
       position: game.players.length,
@@ -161,11 +148,10 @@ class GameServer {
       players: game.players.map(id => ({
         id,
         position: game.players.indexOf(id) + 1,
-        character: id === socket.id ? character : this.players[id]?.character
+        character: this.players[id]?.character || 'goblin'
       }))
     });
 
-    // Auto-start if full
     if (game.players.length === 4) {
       this.startGame(gameId, isPublic);
     }
@@ -173,11 +159,9 @@ class GameServer {
     return true;
   }
 
-  // Combined game management methods
   handleQuickPlay(socket, { character }) {
     this.cleanupOldGames();
     
-    // Find available public game
     let gameId;
     for (const [id, game] of this.publicGames) {
       if (!game.gameStarted && game.players.length < 4) {
@@ -192,126 +176,104 @@ class GameServer {
       gameId = this.createGame(socket, true);
       this.joinGame(socket, gameId, character, true);
     }
-    this.broadcastPlayers(gameId);
-this.broadcastReadyStates(gameId);
-
   }
 
-  createPrivateGame(socket) {
-    const gameId = this.createGame(socket, false);
-    socket.emit('privateGameCreated', { gameId });
-  }
+  // Player management
+  handleDisconnect(socket) {
+    const player = this.players[socket.id];
+    if (!player) return;
 
-  joinPrivateGame(socket, { gameId, character }) {
-    this.joinGame(socket, gameId, character, false);
-  }
-  broadcastPlayers(gameId) {
-  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
-  if (!game) return;
-  const players = game.players.map(id => ({
-    id,
-    character: this.players[id]?.character || 'goblin'
-  }));
-  game.players.forEach(id => this.players[id].socket.emit('playersUpdated', { players }));
-}
+    const gameId = player.gameId;
+    if (gameId) {
+      const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+      if (game) {
+        // Remove player from game
+        game.players = game.players.filter(id => id !== socket.id);
+        delete game.scores[socket.id];
+        delete game.readyStates[socket.id];
 
-broadcastReadyStates(gameId) {
-  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
-  if (!game) return;
-  const readyStates = game.readyStates;
-  game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
-}
-broadcastPlayers(gameId) {
-  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
-  if (!game) return;
-  const players = game.players.map(id => ({
-    id,
-    character: this.players[id]?.character || 'goblin'
-  }));
-  game.players.forEach(id => this.players[id].socket.emit('playersUpdated', { players }));
-}
+        // Notify remaining players
+        socket.to(gameId).emit('playerDisconnected', { playerId: socket.id });
 
-broadcastReadyStates(gameId) {
-  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
-  if (!game) return;
-  const readyStates = game.readyStates;
-  game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
-}
-
-
-  // All other methods (handlePlayerAction, startRound, endRound, etc.)
-  // ... remain the same as in your first implementation ...
-  
-
-// Game lifecycle functions
-function startGame(gameId) {
-  const game = publicGames.get(gameId) || privateGames.get(gameId);
-  if (!game) return;
-
-  game.gameStarted = true;
-  game.trashType = getRandomTrashType();
-  
-  io.to(gameId).emit('gameStart', {
-    trashType: game.trashType,
-    players: Object.values(game.players).map(p => ({
-      id: p.id,
-      character: p.character,
-      position: p.position
-    }))
-  });
-}
-function endGame(gameId, isPublic) {
-  // Get the game from the correct collection
-  const game = isPublic ? publicGames.get(gameId) : privateGames.get(gameId);
-  if (!game) return;
-
-  // Calculate scores and winner
-  const scores = {};
-  let maxScore = -1;
-  let winnerId = null;
-  
-  Object.values(game.players).forEach(player => {
-    scores[player.id] = player.score;
-    if (player.score > maxScore) {
-      maxScore = player.score;
-      winnerId = player.id;
-    } else if (player.score === maxScore) {
-      // Handle tie by selecting randomly
-      winnerId = Math.random() > 0.5 ? winnerId : player.id;
+        // Clean up empty games
+        if (game.players.length === 0) {
+          if (game.isPublic) {
+            this.publicGames.delete(gameId);
+          } else {
+            this.privateGames.delete(gameId);
+          }
+        } else if (socket.id === game.host) {
+          // Assign new host
+          game.host = game.players[0];
+          this.players[game.host].socket.emit('promoteToHost');
+        }
+      }
     }
-  });
 
-  // Broadcast game over to all players
-  io.to(gameId).emit('gameOver', {
-    scores,
-    winnerId,
-    players: Object.values(game.players).map(p => ({
-      id: p.id,
-      character: p.character,
-      position: p.position,
-      score: p.score
-    }))
-  });
+    delete this.players[socket.id];
+    console.log(`Player disconnected: ${socket.id}`);
+  }
 
-  // Clean up game after short delay
-  setTimeout(() => {
+  // Game state methods
+  startGame(gameId, isPublic) {
+    const game = isPublic ? this.publicGames.get(gameId) : this.privateGames.get(gameId);
+    if (!game) return;
+
+    game.gameStarted = true;
+    game.trashType = this.getRandomTrashType();
+    
+    game.players.forEach(playerId => {
+      this.players[playerId].socket.emit('gameStart', {
+        trashType: game.trashType,
+        players: game.players.map(id => ({
+          id,
+          character: this.players[id]?.character || 'goblin',
+          position: game.players.indexOf(id) + 1
+        }))
+      });
+    });
+  }
+
+  endGame(gameId, isPublic) {
+    const game = isPublic ? this.publicGames.get(gameId) : this.privateGames.get(gameId);
+    if (!game) return;
+
+    let maxScore = -1;
+    let winnerId = null;
+    
+    Object.entries(game.scores).forEach(([playerId, score]) => {
+      if (score > maxScore) {
+        maxScore = score;
+        winnerId = playerId;
+      }
+    });
+
+    game.players.forEach(playerId => {
+      this.players[playerId].socket.emit('gameOver', {
+        scores: game.scores,
+        winnerId,
+        players: game.players.map(id => ({
+          id,
+          character: this.players[id]?.character || 'goblin',
+          position: game.players.indexOf(id) + 1,
+          score: game.scores[id] || 0
+        }))
+      });
+    });
+
     if (isPublic) {
-      publicGames.delete(gameId);
+      this.publicGames.delete(gameId);
     } else {
-      privateGames.delete(gameId);
+      this.privateGames.delete(gameId);
     }
-    console.log(`Cleaned up game ${gameId}`);
-  }, 30000); // 30 second delay to allow clients to process
-}
+  }
 
-function getRandomTrashType() {
-  const types = ['golden', 'handbag', 'trashcan'];
-  return types[Math.floor(Math.random() * types.length)];
-}
-// Start cleanup interval
-//setInterval(cleanupOldGames, 5 * 60 * 1000); // Every 5 minutes
+  // Utility methods
+  getRandomTrashType() {
+    const types = ['golden', 'handbag', 'trashcan'];
+    return types[Math.floor(Math.random() * types.length)];
+  }
 
-  // Cleanup old games
   cleanupOldGames() {
     const now = Date.now();
     const maxAge = 30 * 60 * 1000; // 30 minutes
@@ -324,17 +286,96 @@ function getRandomTrashType() {
       }
     });
   }
+
+  broadcastPlayers(gameId) {
+    const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+    if (!game) return;
+    const players = game.players.map(id => ({
+      id,
+      character: this.players[id]?.character || 'goblin'
+    }));
+    game.players.forEach(id => this.players[id].socket.emit('playersUpdated', { players }));
+  }
+
+  broadcastReadyStates(gameId) {
+    const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+    if (!game) return;
+    const readyStates = game.readyStates;
+    game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
+  }
+
+  // Player actions
+  setPlayerReady(socket, { gameId, character, ready }) {
+    const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+    if (!game || !game.players.includes(socket.id)) return;
+
+    game.readyStates[socket.id] = ready;
+    this.players[socket.id].character = character;
+
+    this.broadcastReadyStates(gameId);
+
+    const allReady = game.players.every(id => game.readyStates[id]);
+    if (allReady && game.players.length > 1) {
+      this.startGame(gameId, !!this.publicGames.get(gameId));
+    }
+  }
+
+  handlePlayerAction(socket, { gameId, action, points, powerup }) {
+    const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+    if (!game || !game.players.includes(socket.id)) return;
+
+    socket.to(gameId).emit('playerAction', {
+      playerId: socket.id,
+      action,
+      points,
+      powerup
+    });
+
+    if (action === 'tapTrash') {
+      game.scores[socket.id] = (game.scores[socket.id] || 0) + points;
+    }
+  }
+
+  handleRoundComplete(socket) {
+    const gameId = this.players[socket.id]?.gameId;
+    const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+    if (!game || socket.id !== game.host) return;
+
+    game.round++;
+    if (game.round > game.maxRounds) {
+      this.endGame(gameId, !!this.publicGames.get(gameId));
+    } else {
+      game.trashType = this.getRandomTrashType();
+      socket.to(gameId).emit('startNextRound', {
+        round: game.round,
+        trashType: game.trashType
+      });
+    }
+  }
 }
 
 class PowerupManager {
   constructor() {
     this.powerups = {
-      // Your powerup definitions here
+      doublePoints: {
+        name: "Double Points",
+        description: "Get double points for 10 seconds",
+        duration: 10000,
+        apply: (player) => {
+          player.pointsMultiplier = 2;
+          setTimeout(() => {
+            player.pointsMultiplier = 1;
+          }, this.duration);
+        }
+      }
+      // Add more powerups as needed
     };
   }
 
+  generatePowerupPool(gameId) {
+    return Object.keys(this.powerups);
+  }
 }
 
-// Initialize server
 const gameServer = new GameServer();
 gameServer.initialize();
