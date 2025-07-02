@@ -192,6 +192,9 @@ class GameServer {
       gameId = this.createGame(socket, true);
       this.joinGame(socket, gameId, character, true);
     }
+    this.broadcastPlayers(gameId);
+this.broadcastReadyStates(gameId);
+
   }
 
   createPrivateGame(socket) {
@@ -202,9 +205,111 @@ class GameServer {
   joinPrivateGame(socket, { gameId, character }) {
     this.joinGame(socket, gameId, character, false);
   }
+  broadcastPlayers(gameId) {
+  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+  if (!game) return;
+  const players = game.players.map(id => ({
+    id,
+    character: this.players[id]?.character || 'goblin'
+  }));
+  game.players.forEach(id => this.players[id].socket.emit('playersUpdated', { players }));
+}
+
+broadcastReadyStates(gameId) {
+  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+  if (!game) return;
+  const readyStates = game.readyStates;
+  game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
+}
+broadcastPlayers(gameId) {
+  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+  if (!game) return;
+  const players = game.players.map(id => ({
+    id,
+    character: this.players[id]?.character || 'goblin'
+  }));
+  game.players.forEach(id => this.players[id].socket.emit('playersUpdated', { players }));
+}
+
+broadcastReadyStates(gameId) {
+  const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+  if (!game) return;
+  const readyStates = game.readyStates;
+  game.players.forEach(id => this.players[id].socket.emit('readyStatesUpdated', readyStates));
+}
+
 
   // All other methods (handlePlayerAction, startRound, endRound, etc.)
   // ... remain the same as in your first implementation ...
+  
+
+// Game lifecycle functions
+function startGame(gameId) {
+  const game = publicGames.get(gameId) || privateGames.get(gameId);
+  if (!game) return;
+
+  game.gameStarted = true;
+  game.trashType = getRandomTrashType();
+  
+  io.to(gameId).emit('gameStart', {
+    trashType: game.trashType,
+    players: Object.values(game.players).map(p => ({
+      id: p.id,
+      character: p.character,
+      position: p.position
+    }))
+  });
+}
+function endGame(gameId, isPublic) {
+  // Get the game from the correct collection
+  const game = isPublic ? publicGames.get(gameId) : privateGames.get(gameId);
+  if (!game) return;
+
+  // Calculate scores and winner
+  const scores = {};
+  let maxScore = -1;
+  let winnerId = null;
+  
+  Object.values(game.players).forEach(player => {
+    scores[player.id] = player.score;
+    if (player.score > maxScore) {
+      maxScore = player.score;
+      winnerId = player.id;
+    } else if (player.score === maxScore) {
+      // Handle tie by selecting randomly
+      winnerId = Math.random() > 0.5 ? winnerId : player.id;
+    }
+  });
+
+  // Broadcast game over to all players
+  io.to(gameId).emit('gameOver', {
+    scores,
+    winnerId,
+    players: Object.values(game.players).map(p => ({
+      id: p.id,
+      character: p.character,
+      position: p.position,
+      score: p.score
+    }))
+  });
+
+  // Clean up game after short delay
+  setTimeout(() => {
+    if (isPublic) {
+      publicGames.delete(gameId);
+    } else {
+      privateGames.delete(gameId);
+    }
+    console.log(`Cleaned up game ${gameId}`);
+  }, 30000); // 30 second delay to allow clients to process
+}
+
+function getRandomTrashType() {
+  const types = ['golden', 'handbag', 'trashcan'];
+  return types[Math.floor(Math.random() * types.length)];
+}
+// Start cleanup interval
+//setInterval(cleanupOldGames, 5 * 60 * 1000); // Every 5 minutes
 
   // Cleanup old games
   cleanupOldGames() {
