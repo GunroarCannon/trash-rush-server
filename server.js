@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const socketio = require('socket.io');
-const seedrandom = require('seedrandom');
 
 class GameServer {
   constructor() {
@@ -198,19 +197,6 @@ class PowerupManager {
     };
   }
 
-  getPowerup(name) {
-    return this.powerups[name];
-  }
-
-  generatePowerupPool(gameId) {
-    const rng = seedrandom(gameId);
-    return Object.keys(this.powerups)
-      .sort(() => rng() - 0.5);
-  }
-
-  getRoundPowerups(gameId, round) {
-    return this.generatePowerupPool(gameId).slice(0, 3);
-  }
 }
 
 // Initialize server
