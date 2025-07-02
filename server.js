@@ -92,6 +92,7 @@ class GameServer {
   // Game management methods
   createGame(socket, isPublic = true) {
     const gameId = `game_${Date.now()}`;
+    console.log('New game created, everybodyyy.');
     const game = {
       id: gameId,
       players: [socket.id],
@@ -182,10 +183,12 @@ class GameServer {
   // Player management
   handleDisconnect(socket) {
     const player = this.players[socket.id];
+    console.log('Disconnecting a player0',socket.id);
     if (!player) return;
 
     const gameId = player.gameId;
     if (gameId) {
+      console.log('Removing from game');
       const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
       if (game) {
         // Remove player from game
@@ -193,11 +196,14 @@ class GameServer {
         delete game.scores[socket.id];
         delete game.readyStates[socket.id];
 
+        console.log('Notified all players');
+
         // Notify remaining players
         socket.to(gameId).emit('playerDisconnected', { playerId: socket.id });
 
         // Clean up empty games
         if (game.players.length === 0) {
+          console.log('Game is empty, delete');
           if (game.isPublic) {
             this.publicGames.delete(gameId);
           } else {
@@ -205,6 +211,7 @@ class GameServer {
           }
         } else if (socket.id === game.host) {
           // Assign new host
+          console.log('New host assigned');
           game.host = game.players[0];
           this.players[game.host].socket.emit('promoteToHost');
         }
@@ -307,7 +314,10 @@ class GameServer {
 
 setPlayerReady(socket, { gameId, character, ready }) {
     const game = this.publicGames.get(gameId) || this.privateGames.get(gameId);
+    
+    console.log('tryin toready');
     if (!game || !game.players.includes(socket.id)) return;
+      console.log('moving on');
 
     // Only proceed if ready state actually changed
     if (game.readyStates[socket.id] !== ready) {
