@@ -385,7 +385,7 @@ class GameServer {
                 );
                 if (allReady && game.players.length > 1 && !game.gameStarted) {
                     console.log("allready, count downnn");
-                    socket.to(gameId).emit("startGameCountDown", {
+                    this.io.to(gameId).emit("startGameCountDown", {
                         round: game.round,
                         trashType: game.trashType,
                     });
