@@ -11,7 +11,6 @@ class GameServer {
         this.gameReadyStates = {};
         this.lastActivity = Date.now();
         this.ACTIVITY_TIMEOUT = 300000; // 5 minutes
-        this.powerupManager = new PowerupManager();
     }
 
     initialize() {
@@ -133,7 +132,6 @@ class GameServer {
             trashType: this.getRandomTrashType(),
             negativeMode: false,
             scores: {},
-            powerups: this.powerupManager.generatePowerupPool(gameId),
             isPublic,
             createdAt: Date.now(),
         };
@@ -144,6 +142,8 @@ class GameServer {
             this.privateGames.set(gameId, game);
         }
 
+
+        console.log('CREATING NEW GAME');
         this.players[socket.id].gameId = gameId;
         socket.join(gameId);
         socket.emit(isPublic ? "gameCreated" : "privateGameCreated", {
@@ -165,7 +165,7 @@ class GameServer {
             });
             return false;
         }
-        console.log("player joined yoh");
+        console.log("PLAYER JOINING");
         game.players.push(socket.id);
         this.players[socket.id] = { socket, gameId, character };
         game.scores[socket.id] = 0;
@@ -182,7 +182,7 @@ class GameServer {
             isHost: false,
             seed: gameId,
             currentRound: game.round,
-            playerId: this.players.length-1;
+            playerId: game.players.length-1;
             players: game.players.map((id) => ({
                 id,
                 position: game.players.indexOf(id) + 1,
@@ -268,6 +268,8 @@ class GameServer {
             : this.privateGames.get(gameId);
         if (!game) return;
 
+        console.log('STARTING GAME');
+
         game.gameStarted = true;
         game.trashType = this.getRandomTrashType();
 
@@ -288,6 +290,8 @@ class GameServer {
             ? this.publicGames.get(gameId)
             : this.privateGames.get(gameId);
         if (!game) return;
+
+        console.log('ENDING GAME');
 
         let maxScore = -1;
         let winnerId = null;
@@ -421,6 +425,7 @@ class GameServer {
         const game =
             this.publicGames.get(gameId) || this.privateGames.get(gameId);
         if (!game || !game.players.includes(socket.id)) return;
+        console.log('HAANDLING ACTION', action);
 
         socket.to(gameId).emit("playerAction", {
             playerId: socket.id,
@@ -450,29 +455,6 @@ class GameServer {
                 trashType: game.trashType,
             });
         }
-    }
-}
-
-class PowerupManager {
-    constructor() {
-        this.powerups = {
-            doublePoints: {
-                name: "Double Points",
-                description: "Get double points for 10 seconds",
-                duration: 10000,
-                apply: (player) => {
-                    player.pointsMultiplier = 2;
-                    setTimeout(() => {
-                        player.pointsMultiplier = 1;
-                    }, this.duration);
-                },
-            },
-            // Add more powerups as needed
-        };
-    }
-
-    generatePowerupPool(gameId) {
-        return Object.keys(this.powerups);
     }
 }
 
