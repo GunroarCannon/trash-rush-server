@@ -182,7 +182,7 @@ class GameServer {
             isHost: false,
             seed: gameId,
             currentRound: game.round,
-            playerId: game.players.length-1;
+            playerId: game.players.length-1,
             players: game.players.map((id) => ({
                 id,
                 position: game.players.indexOf(id) + 1,
